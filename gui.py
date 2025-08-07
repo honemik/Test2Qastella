@@ -50,7 +50,8 @@ class App(tk.Tk):
             self.files = self.sets[self.set_var.get()]
             self.option_menu = tk.OptionMenu(self, self.set_var, *keys, command=self.change_set)
             self.option_menu.pack()
-            self.log_msg(f'Recognized sets: {keys}')
+            for k, v in self.sets.items():
+                self.log_msg(f'Set {k}: subject {v.get("subject")}')
 
     def do_questions(self):
         if not self.folder or not self.files.get('question'):
@@ -81,10 +82,13 @@ class App(tk.Tk):
         if not self.questions:
             self.log_msg('No questions parsed')
             return
-        combined = pdf_tool.combine(self.questions, self.ans_md, self.mod_md, set_name=self.set_var.get())
-        out_path = os.path.join(pdf_tool.OUT_DIR, f"combined_{self.set_var.get()}.json")
+        subj = self.files.get('subject', 'Unknown')
+        source = self.set_var.get()
+        combined = pdf_tool.combine(self.questions, self.ans_md, self.mod_md, subject=subj, source=source)
+        out_path = os.path.join(pdf_tool.OUT_DIR, f"combined_{source}.json")
         self.log_msg(f'Saved combined JSON to {out_path}')
-        self.preview_questions(combined)
+        qs = combined['subjects'][subj][source]
+        self.preview_questions(qs)
 
     def change_set(self, value):
         self.files = self.sets[value]

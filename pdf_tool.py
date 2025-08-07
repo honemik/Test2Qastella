@@ -40,7 +40,15 @@ def recognize_files(folder: str) -> Dict[str, Dict[str, Optional[str]]]:
         key = f.split('_')[0]
         fname = f.lower()
         full_path = os.path.join(folder, f)
-        slot = grouped.setdefault(key, {"question": None, "answer": None, "modification": None})
+        m = re.search(r"醫學[\(（]([一二三四五六])", f)
+        subject = f"醫學({m.group(1)})" if m else "Unknown"
+        slot = grouped.setdefault(key, {
+            "question": None,
+            "answer": None,
+            "modification": None,
+            "subject": subject,
+        })
+        slot.setdefault("subject", subject)
         if 'ans' in fname:
             slot['answer'] = full_path
         elif 'mod' in fname:
@@ -203,32 +211,78 @@ def parse_pdf_with_docling(pdf_path: str) -> str:
     return md
 
 
-def combine(questions: List[Dict], ans_md: str, mod_md: str, set_name: str = "output") -> List[Dict]:
+def _extract_md_tables(md: str) -> List[List[List[str]]]:
+    tables: List[List[List[str]]] = []
+    lines = md.splitlines()
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith('|'):
+            table_lines = []
+            while i < len(lines) and lines[i].strip().startswith('|'):
+                table_lines.append(lines[i])
+                i += 1
+            rows = []
+            for line in table_lines:
+                cells = [c.strip() for c in line.strip().strip('|').split('|')]
+                rows.append(cells)
+            tables.append(rows)
+        else:
+            i += 1
+    return tables
+
+
+def _parse_answer_map(md: str) -> Dict[str, str]:
+    best: Dict[str, str] = {}
+    tables = _extract_md_tables(md)
+    for rows in tables:
+        mapping: Dict[str, str] = {}
+        for cells in rows[1:]:  # skip header if any
+            if len(cells) < 2:
+                continue
+            num, val = cells[0].strip(), cells[1].strip()
+            if num.isdigit() and val:
+                mapping[num] = OPT_MAP.get(val, val)
+        if len(mapping) > len(best):
+            best = mapping
+    return best
+
+
+def _parse_mod_map(md: str) -> Dict[str, str]:
+    best: Dict[str, str] = {}
+    tables = _extract_md_tables(md)
+    for rows in tables:
+        mapping: Dict[str, str] = {}
+        for cells in rows[1:]:
+            if len(cells) < 2:
+                continue
+            num = cells[0].strip()
+            if not num.isdigit():
+                continue
+            text = '|'.join(cells[1:]).strip()
+            if text:
+                mapping[num] = text
+        if len(mapping) > len(best):
+            best = mapping
+    return best
+
+
+def combine(questions: List[Dict], ans_md: str, mod_md: str, *, subject: str, source: str) -> Dict:
     """Combine questions with answers and modifications from markdown strings."""
-    ans_map: Dict[str, str] = {}
-    for line in ans_md.splitlines():
-        m = re.match(r"^(\d+)\s*[\.、:：-]?\s*([A-DＡＢＣＤ\ue18c-\ue18f])", line.strip())
-        if m:
-            key = m.group(2)
-            ans_map[m.group(1)] = OPT_MAP.get(key, key)
-    if not ans_map:
-        letters = re.findall(r"[A-DＡＢＣＤ\ue18c-\ue18f]", ans_md)
-        for idx, ch in enumerate(letters, 1):
-            ans_map[str(idx)] = OPT_MAP.get(ch, ch)
-    mod_map: Dict[str, str] = {}
-    for line in mod_md.splitlines():
-        m = re.match(r"^(\d+)\s*[#＃]\s*(.+)$", line.strip())
-        if m:
-            mod_map[m.group(1)] = m.group(2).strip()
+    ans_map = _parse_answer_map(ans_md)
+    mod_map = _parse_mod_map(mod_md)
+    if not ans_map and not mod_map:
+        raise ValueError('No analyzable tables in answer or modification PDFs')
     for q in questions:
         qid = str(q['id'])
-        q['answer'] = ans_map.get(qid, '')
-        if qid in mod_map:
+        if ans_map:
+            q['answer'] = ans_map.get(qid, '')
+        if mod_map and qid in mod_map:
             q['modification'] = mod_map[qid]
-    out_path = os.path.join(OUT_DIR, f"combined_{set_name}.json")
+    out = {"subjects": {subject: {source: questions}}}
+    out_path = os.path.join(OUT_DIR, f"combined_{source}.json")
     with open(out_path, 'w', encoding='utf-8') as f:
-        json.dump(questions, f, ensure_ascii=False, indent=2)
-    return questions
+        json.dump(out, f, ensure_ascii=False, indent=2)
+    return out
 
 
 def demo(folder: str) -> None:
@@ -245,8 +299,9 @@ def demo(folder: str) -> None:
         try:
             ans_md = parse_pdf_with_docling(files.get('answer')) if files.get('answer') else ''
             mod_md = parse_pdf_with_docling(files.get('modification')) if files.get('modification') else ''
-            combined = combine(qs, ans_md, mod_md, set_name=key)
-            print('Combined sample:', json.dumps(combined[:1], ensure_ascii=False, indent=2))
+            combined = combine(qs, ans_md, mod_md, subject=files.get('subject', 'Unknown'), source=key)
+            sample = combined['subjects'][files.get('subject', 'Unknown')][key][:1]
+            print('Combined sample:', json.dumps(sample, ensure_ascii=False, indent=2))
         except Exception as e:
             print('Docling processing failed:', e)
 
