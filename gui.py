@@ -1,4 +1,3 @@
-import json
 import os
 import tkinter as tk
 from tkinter import filedialog, scrolledtext
@@ -12,8 +11,8 @@ class App(tk.Tk):
         self.geometry('600x400')
         self.folder = None
         self.questions = []
-        self.ans_json = {}
-        self.mod_json = {}
+        self.ans_md = ''
+        self.mod_md = ''
         self.sets = {}
         self.set_var = tk.StringVar()
         self.option_menu = None
@@ -58,27 +57,23 @@ class App(tk.Tk):
             self.log_msg('Question file not set')
             return
         self.questions = pdf_tool.parse_questions(self.files['question'])
-        self.log_msg(f'Parsed {len(self.questions)} questions')
-        out = os.path.join(self.folder, f"questions_{self.set_var.get()}.json")
-        with open(out, 'w', encoding='utf-8') as f:
-            json.dump(self.questions, f, ensure_ascii=False, indent=2)
-        self.log_msg(f'Saved questions to {out}')
+        base = os.path.splitext(os.path.basename(self.files['question']))[0]
+        path = os.path.join(pdf_tool.OUT_DIR, f"questions_{base}.json")
+        self.log_msg(f'Parsed {len(self.questions)} questions -> {path}')
         self.preview_questions()
 
     def do_answers(self):
         try:
             if self.files.get('answer'):
-                self.ans_json = pdf_tool.parse_pdf_with_docling(self.files['answer'])
-                out = os.path.join(self.folder, f"answers_{self.set_var.get()}.json")
-                with open(out, 'w', encoding='utf-8') as f:
-                    json.dump(self.ans_json, f, ensure_ascii=False, indent=2)
-                self.log_msg(f'Parsed answer PDF -> {out}')
+                self.ans_md = pdf_tool.parse_pdf_with_docling(self.files['answer'])
+                path = os.path.join(pdf_tool.OUT_DIR, f"{os.path.splitext(os.path.basename(self.files['answer']))[0]}.md")
+                self.log_msg(f'Parsed answer PDF -> {path}')
+                self.preview_text(self.ans_md, 'Answer Markdown')
             if self.files.get('modification'):
-                self.mod_json = pdf_tool.parse_pdf_with_docling(self.files['modification'])
-                out = os.path.join(self.folder, f"mods_{self.set_var.get()}.json")
-                with open(out, 'w', encoding='utf-8') as f:
-                    json.dump(self.mod_json, f, ensure_ascii=False, indent=2)
-                self.log_msg(f'Parsed modification PDF -> {out}')
+                self.mod_md = pdf_tool.parse_pdf_with_docling(self.files['modification'])
+                path = os.path.join(pdf_tool.OUT_DIR, f"{os.path.splitext(os.path.basename(self.files['modification']))[0]}.md")
+                self.log_msg(f'Parsed modification PDF -> {path}')
+                self.preview_text(self.mod_md, 'Modification Markdown')
         except Exception as e:
             self.log_msg(f'Docling error: {e}')
 
@@ -86,10 +81,8 @@ class App(tk.Tk):
         if not self.questions:
             self.log_msg('No questions parsed')
             return
-        combined = pdf_tool.combine(self.questions, self.ans_json, self.mod_json)
-        out_path = os.path.join(self.folder, f"combined_{self.set_var.get()}.json")
-        with open(out_path, 'w', encoding='utf-8') as f:
-            json.dump(combined, f, ensure_ascii=False, indent=2)
+        combined = pdf_tool.combine(self.questions, self.ans_md, self.mod_md, set_name=self.set_var.get())
+        out_path = os.path.join(pdf_tool.OUT_DIR, f"combined_{self.set_var.get()}.json")
         self.log_msg(f'Saved combined JSON to {out_path}')
         self.preview_questions(combined)
 
@@ -139,6 +132,13 @@ class App(tk.Tk):
 
         tk.Button(btn_frame, text='Next', command=next_q).pack()
         show(0)
+
+    def preview_text(self, text, title='Preview'):
+        win = tk.Toplevel(self)
+        win.title(title)
+        st = scrolledtext.ScrolledText(win)
+        st.pack(expand=True, fill='both')
+        st.insert(tk.END, text)
 
 if __name__ == '__main__':
     app = App()
