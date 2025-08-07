@@ -11,24 +11,39 @@ try:
 except Exception:  # pragma: no cover - library optional at runtime
     DocumentConverter = None
 
-QUESTION_PATTERN = re.compile(r"^(\d+)[\.\s]")
+# mapping for private-use option symbols
+OPT_MAP = {
+    "\ue18c": "A",
+    "\ue18d": "B",
+    "\ue18e": "C",
+    "\ue18f": "D",
+    "Ａ": "A",
+    "Ｂ": "B",
+    "Ｃ": "C",
+    "Ｄ": "D",
+}
+
+# patterns to locate questions / options in text lines
+QUESTION_START = re.compile(r"^(\d{1,3})[\.．]\s*(.*)")
 OPTION_PATTERN = re.compile(r"^[A-D][\.|\s]")
 
 
-def recognize_files(folder: str) -> Dict[str, Optional[str]]:
-    """Recognize question, answer and modification PDF files by name."""
+def recognize_files(folder: str) -> Dict[str, Dict[str, Optional[str]]]:
+    """Recognize question, answer and modification PDF files grouped by prefix."""
     files = [f for f in os.listdir(folder) if f.lower().endswith('.pdf')]
-    res = {"question": None, "answer": None, "modification": None}
+    grouped: Dict[str, Dict[str, Optional[str]]] = {}
     for f in files:
+        key = f.split('_')[0]
         fname = f.lower()
         full_path = os.path.join(folder, f)
+        slot = grouped.setdefault(key, {"question": None, "answer": None, "modification": None})
         if 'ans' in fname:
-            res['answer'] = full_path
+            slot['answer'] = full_path
         elif 'mod' in fname:
-            res['modification'] = full_path
+            slot['modification'] = full_path
         else:
-            res['question'] = full_path
-    return res
+            slot['question'] = full_path
+    return grouped
 
 
 def _extract_images(page: fitz.Page, q_ranges: List[tuple]) -> List[List[str]]:
@@ -41,7 +56,7 @@ def _extract_images(page: fitz.Page, q_ranges: List[tuple]) -> List[List[str]]:
             continue
         rect = rects[0]
         pix = fitz.Pixmap(page.parent, xref)
-        b64 = base64.b64encode(pix.tobytes()).decode('ascii')
+        b64 = base64.b64encode(pix.tobytes("png")).decode('ascii')
         y_center = (rect.y0 + rect.y1) / 2
         for idx, (y0, y1) in enumerate(q_ranges):
             if y0 <= y_center <= y1:
@@ -53,36 +68,63 @@ def _extract_images(page: fitz.Page, q_ranges: List[tuple]) -> List[List[str]]:
 def parse_questions(pdf_path: str) -> List[Dict]:
     """Parse question PDF into structured list with images."""
     doc = fitz.open(pdf_path)
-    questions = []
+    questions: List[Dict] = []
+    expected = 1
     for page in doc:
-        blocks = page.get_text("blocks")
-        blocks = sorted(blocks, key=lambda b: (b[1], b[0]))
+        data = page.get_text("dict")
+        lines = []
+        for block in data.get("blocks", []):
+            for line in block.get("lines", []):
+                text = ''.join(span["text"] for span in line.get("spans", []))
+                x0, y0, *_ = line["bbox"]
+                lines.append((x0, y0, text))
+        lines.sort(key=lambda l: (l[1], l[0]))
         current = None
-        q_ranges = []
-        for b in blocks:
-            x0, y0, x1, y1, text, *_ = b
-            if QUESTION_PATTERN.match(text.strip()):
-                if current:
-                    current['range'][1] = y0
-                    questions.append(current['data'])
-                    q_ranges.append(tuple(current['range']))
-                qid = int(QUESTION_PATTERN.match(text.strip()).group(1))
-                current = {
-                    'data': {
-                        'id': qid,
-                        'question': text.strip(),
-                        'options': {},
-                        'images': []
-                    },
-                    'range': [y0, page.rect.y1]
-                }
-            elif current:
-                stripped = text.strip()
-                if OPTION_PATTERN.match(stripped):
-                    opt_key = stripped[0]
-                    current['data']['options'][opt_key] = stripped[2:].strip()
-                else:
-                    current['data']['question'] += '\n' + stripped
+        q_ranges: List[tuple] = []
+        for x0, y0, text in lines:
+            stripped = text.strip()
+            if stripped.isdigit():
+                qid = int(stripped)
+                if qid == expected:
+                    if current:
+                        current['range'][1] = y0
+                        questions.append(current['data'])
+                        q_ranges.append(tuple(current['range']))
+                    current = {
+                        'data': {'id': qid, 'question': '', 'options': {}, 'images': []},
+                        'range': [y0, page.rect.y1],
+                    }
+                    expected += 1
+                elif current:
+                    # treat as normal text
+                    if current['data']['question']:
+                        current['data']['question'] += '\n' + stripped
+                    else:
+                        current['data']['question'] = stripped
+            else:
+                m = QUESTION_START.match(stripped)
+                if m and int(m.group(1)) == expected:
+                    if current:
+                        current['range'][1] = y0
+                        questions.append(current['data'])
+                        q_ranges.append(tuple(current['range']))
+                    current = {
+                        'data': {'id': expected, 'question': m.group(2).strip(), 'options': {}, 'images': []},
+                        'range': [y0, page.rect.y1],
+                    }
+                    expected += 1
+                elif current:
+                    if stripped and stripped[0] in OPT_MAP:
+                        opt_key = OPT_MAP[stripped[0]]
+                        current['data']['options'][opt_key] = stripped[1:].strip()
+                    elif OPTION_PATTERN.match(stripped):
+                        opt_key = stripped[0]
+                        current['data']['options'][opt_key] = stripped[2:].strip()
+                    else:
+                        if current['data']['question']:
+                            current['data']['question'] += '\n' + stripped
+                        else:
+                            current['data']['question'] = stripped
         if current:
             questions.append(current['data'])
             q_ranges.append(tuple(current['range']))
@@ -93,12 +135,19 @@ def parse_questions(pdf_path: str) -> List[Dict]:
 
 
 def parse_pdf_with_docling(pdf_path: str) -> Dict:
-    """Use docling DocumentConverter to convert PDF to JSON."""
+    """Use docling DocumentConverter to convert PDF to JSON with fallback."""
     if DocumentConverter is None:
-        raise RuntimeError("docling library not available")
-    conv = DocumentConverter()
-    res = conv.convert(pdf_path)
-    return res.document.model_dump()
+        doc = fitz.open(pdf_path)
+        text = "\n".join(page.get_text() for page in doc)
+        return {"text": text}
+    try:
+        conv = DocumentConverter()
+        res = conv.convert(pdf_path)
+        return res.document.model_dump()
+    except Exception:
+        doc = fitz.open(pdf_path)
+        text = "\n".join(page.get_text() for page in doc)
+        return {"text": text}
 
 
 def _gather_text(obj) -> str:
@@ -115,8 +164,21 @@ def combine(questions: List[Dict], ans_json: Dict, mod_json: Dict) -> List[Dict]
     """Combine questions with answers and modifications."""
     ans_text = _gather_text(ans_json)
     mod_text = _gather_text(mod_json)
-    ans_map = {m.group(1): m.group(2) for m in re.finditer(r"(\d+)\s*[:\.\-]?\s*([A-D])", ans_text)}
-    mod_map = {m.group(1): m.group(2) for m in re.finditer(r"(\d+)\s*[:\.\-]?\s*(.+)", mod_text)}
+    ans_map: Dict[str, str] = {}
+    for line in ans_text.splitlines():
+        m = re.match(r"^(\d+)\s*[\.、:：-]?\s*([A-DＡＢＣＤ\ue18c-\ue18f])", line.strip())
+        if m:
+            key = m.group(2)
+            ans_map[m.group(1)] = OPT_MAP.get(key, key)
+    if not ans_map:
+        letters = re.findall(r"[A-DＡＢＣＤ\ue18c-\ue18f]", ans_text)
+        for idx, ch in enumerate(letters, 1):
+            ans_map[str(idx)] = OPT_MAP.get(ch, ch)
+    mod_map: Dict[str, str] = {}
+    for line in mod_text.splitlines():
+        m = re.match(r"^(\d+)\s*[#＃]\s*(.+)$", line.strip())
+        if m:
+            mod_map[m.group(1)] = m.group(2).strip()
     for q in questions:
         qid = str(q['id'])
         q['answer'] = ans_map.get(qid, '')
@@ -126,21 +188,23 @@ def combine(questions: List[Dict], ans_json: Dict, mod_json: Dict) -> List[Dict]
 
 
 def demo(folder: str) -> None:
-    files = recognize_files(folder)
-    print('Recognized:', files)
-    if files['question']:
-        qs = parse_questions(files['question'])
-        print(f'Parsed {len(qs)} questions')
-    else:
-        print('Question file missing')
-        qs = []
-    try:
-        ans_json = parse_pdf_with_docling(files['answer']) if files['answer'] else {}
-        mod_json = parse_pdf_with_docling(files['modification']) if files['modification'] else {}
-        combined = combine(qs, ans_json, mod_json)
-        print('Combined sample:', json.dumps(combined[:1], ensure_ascii=False, indent=2))
-    except Exception as e:
-        print('Docling processing failed:', e)
+    sets = recognize_files(folder)
+    print('Recognized:', sets)
+    for key, files in sets.items():
+        print(f'Processing set {key}')
+        if files.get('question'):
+            qs = parse_questions(files['question'])
+            print(f'Parsed {len(qs)} questions')
+        else:
+            print('Question file missing')
+            qs = []
+        try:
+            ans_json = parse_pdf_with_docling(files.get('answer')) if files.get('answer') else {}
+            mod_json = parse_pdf_with_docling(files.get('modification')) if files.get('modification') else {}
+            combined = combine(qs, ans_json, mod_json)
+            print('Combined sample:', json.dumps(combined[:1], ensure_ascii=False, indent=2))
+        except Exception as e:
+            print('Docling processing failed:', e)
 
 
 if __name__ == '__main__':
