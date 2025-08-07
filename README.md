@@ -16,7 +16,7 @@ answer: Correct choice(s)
 images (optional): Array of base64-encoded image data
 
 Example:
-
+```json
 {
   "subjects": {
     "Biology": {
@@ -33,3 +33,4 @@ Example:
     }
   }
 }
+```
