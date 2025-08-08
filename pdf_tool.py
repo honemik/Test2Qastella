@@ -80,6 +80,11 @@ def _extract_images(page: fitz.Page, q_ranges: List[tuple]) -> List[List[str]]:
             continue
         rect = rects[0]
         pix = fitz.Pixmap(page.parent, xref)
+        # Some exam PDFs embed images in color spaces like CMYK or with alpha
+        # channels, which cannot be written directly as PNG. Convert such
+        # pixmaps to RGB to avoid `pixmap must be grayscale or rgb` errors.
+        if pix.n not in (1, 3) or pix.alpha:
+            pix = fitz.Pixmap(fitz.csRGB, pix)
         # prefix the base64 string with a data URI so JSON consumers know the
         # encoding and image type
         b64 = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode('ascii')
