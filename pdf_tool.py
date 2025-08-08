@@ -33,22 +33,34 @@ OPTION_PATTERN = re.compile(r"^[A-D][\.|\s]")
 
 
 def recognize_files(folder: str) -> Dict[str, Dict[str, Optional[str]]]:
-    """Recognize question, answer and modification PDF files grouped by prefix."""
+    """Recognize question, answer and modification PDF files grouped by set.
+
+    Each set is keyed by the exam prefix and subject code (e.g. 104030_0104)
+    so that different subjects within the same year are separated correctly.
+    """
     files = [f for f in os.listdir(folder) if f.lower().endswith('.pdf')]
     grouped: Dict[str, Dict[str, Optional[str]]] = {}
     for f in files:
-        key = f.split('_')[0]
+        parts = f.split('_')
+        prefix = parts[0]
+        code_part = parts[1] if len(parts) > 1 else ''
+        m_code = re.search(r"(?:ANS|MOD)?(\d+)", code_part, re.IGNORECASE)
+        subj_code = m_code.group(1) if m_code else code_part
+        key = f"{prefix}_{subj_code}" if subj_code else prefix
+
         fname = f.lower()
         full_path = os.path.join(folder, f)
         m = re.search(r"醫學[\(（]([一二三四五六])", f)
         subject = f"醫學({m.group(1)})" if m else "Unknown"
+
         slot = grouped.setdefault(key, {
             "question": None,
             "answer": None,
             "modification": None,
             "subject": subject,
         })
-        slot.setdefault("subject", subject)
+        if slot.get("subject") == "Unknown" and subject != "Unknown":
+            slot["subject"] = subject
         if 'ans' in fname:
             slot['answer'] = full_path
         elif 'mod' in fname:
@@ -244,7 +256,10 @@ def _parse_answer_map(md: str) -> Dict[str, str]:
                 mapping[num] = OPT_MAP.get(val, val)
         if len(mapping) > len(best):
             best = mapping
-    return best
+    if best:
+        return best
+    letters = [OPT_MAP.get(ch, ch) for ch in re.findall(r'[A-DＡ-Ｄ]', md)]
+    return {str(i + 1): letters[i] for i in range(len(letters))}
 
 
 def _parse_mod_map(md: str) -> Dict[str, str]:
@@ -263,7 +278,12 @@ def _parse_mod_map(md: str) -> Dict[str, str]:
                 mapping[num] = text
         if len(mapping) > len(best):
             best = mapping
-    return best
+    if best:
+        return best
+    mapping: Dict[str, str] = {}
+    for m in re.finditer(r"第(\d+)題([^第。\n]+)", md):
+        mapping[m.group(1)] = m.group(2).strip().strip('，,')
+    return mapping
 
 
 def combine(questions: List[Dict], ans_md: str, mod_md: str, *, subject: str, source: str) -> Dict:

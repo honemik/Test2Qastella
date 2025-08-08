@@ -16,6 +16,7 @@ class App(tk.Tk):
         self.sets = {}
         self.set_var = tk.StringVar()
         self.option_menu = None
+        self.label_to_key = {}
 
         btn_frame = tk.Frame(self)
         btn_frame.pack(pady=10)
@@ -40,18 +41,24 @@ class App(tk.Tk):
             self.folder = folder
             self.log_msg(f'Selected folder: {folder}')
             self.sets = pdf_tool.recognize_files(folder)
-            keys = list(self.sets.keys())
-            if not keys:
+            self.label_to_key = {}
+            labels = []
+            for k in sorted(self.sets.keys()):
+                subj = self.sets[k].get("subject")
+                label = f"{k} {subj}"
+                self.label_to_key[label] = k
+                labels.append(label)
+            if not labels:
                 self.log_msg('No PDF files found')
                 return
             if self.option_menu:
                 self.option_menu.destroy()
-            self.set_var.set(keys[0])
-            self.files = self.sets[self.set_var.get()]
-            self.option_menu = tk.OptionMenu(self, self.set_var, *keys, command=self.change_set)
+            self.set_var.set(labels[0])
+            self.files = self.sets[self.label_to_key[self.set_var.get()]]
+            self.option_menu = tk.OptionMenu(self, self.set_var, *labels, command=self.change_set)
             self.option_menu.pack()
-            for k, v in self.sets.items():
-                self.log_msg(f'Set {k}: subject {v.get("subject")}')
+            for lab, k in [(lab, self.label_to_key[lab]) for lab in labels]:
+                self.log_msg(f'Set {k}: subject {self.sets[k].get("subject")}')
 
     def do_questions(self):
         if not self.folder or not self.files.get('question'):
@@ -83,7 +90,7 @@ class App(tk.Tk):
             self.log_msg('No questions parsed')
             return
         subj = self.files.get('subject', 'Unknown')
-        source = self.set_var.get()
+        source = self.label_to_key[self.set_var.get()]
         combined = pdf_tool.combine(self.questions, self.ans_md, self.mod_md, subject=subj, source=source)
         out_path = os.path.join(pdf_tool.OUT_DIR, f"combined_{source}.json")
         self.log_msg(f'Saved combined JSON to {out_path}')
@@ -91,8 +98,9 @@ class App(tk.Tk):
         self.preview_questions(qs)
 
     def change_set(self, value):
-        self.files = self.sets[value]
-        self.log_msg(f'Using set: {value}')
+        key = self.label_to_key[value]
+        self.files = self.sets[key]
+        self.log_msg(f'Using set: {key}')
 
     def preview_questions(self, questions=None):
         if questions is None:
