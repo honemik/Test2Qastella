@@ -80,7 +80,9 @@ def _extract_images(page: fitz.Page, q_ranges: List[tuple]) -> List[List[str]]:
             continue
         rect = rects[0]
         pix = fitz.Pixmap(page.parent, xref)
-        b64 = base64.b64encode(pix.tobytes("png")).decode('ascii')
+        # prefix the base64 string with a data URI so JSON consumers know the
+        # encoding and image type
+        b64 = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode('ascii')
         y_center = (rect.y0 + rect.y1) / 2
         for idx, (y0, y1) in enumerate(q_ranges):
             if y0 <= y_center <= y1:
@@ -373,6 +375,9 @@ def combine(questions: List[Dict], ans_md: str, mod_md: str, *, subject: str, so
         if qid not in mapping:
             raise ValueError(f'Missing answer for question {qid}')
         q['answer'] = mapping[qid]
+        # ensure images are stored with data URI prefixes for downstream use
+        if 'images' in q and q['images']:
+            q['images'] = [img if img.startswith('data:image') else 'data:image/png;base64,' + img for img in q['images']]
 
     out = {"subjects": {subject: {source: questions}}}
     if not validate_output_structure(out):
