@@ -122,8 +122,6 @@ class App(tk.Tk):
                 text.insert(tk.END, f"{k}. {v}\n")
             if q.get('answer'):
                 text.insert(tk.END, f"Ans: {q['answer']}\n")
-            if q.get('modification'):
-                text.insert(tk.END, f"Mod: {q['modification']}\n")
             if q.get('images'):
                 data = q['images'][0]
                 photo = tk.PhotoImage(data=data)

@@ -263,6 +263,12 @@ def _parse_answer_map(md: str) -> Dict[str, str]:
 
 
 def _parse_mod_map(md: str) -> Dict[str, str]:
+    """Parse modification markdown into a mapping of question id -> corrected answer.
+
+    The modification files are expected to contain answers as letters as well. We
+    therefore reuse the same logic as parsing the answer tables but take the
+    last non-empty cell as the corrected letter.
+    """
     best: Dict[str, str] = {}
     tables = _extract_md_tables(md)
     for rows in tables:
@@ -273,31 +279,62 @@ def _parse_mod_map(md: str) -> Dict[str, str]:
             num = cells[0].strip()
             if not num.isdigit():
                 continue
-            text = '|'.join(cells[1:]).strip()
-            if text:
-                mapping[num] = text
+            # take last non-empty cell as the corrected answer
+            vals = [c.strip() for c in cells[1:] if c.strip()]
+            if vals:
+                letter = OPT_MAP.get(vals[-1], vals[-1])
+                mapping[num] = letter
         if len(mapping) > len(best):
             best = mapping
     if best:
         return best
     mapping: Dict[str, str] = {}
-    for m in re.finditer(r"第(\d+)題([^第。\n]+)", md):
-        mapping[m.group(1)] = m.group(2).strip().strip('，,')
+    for m in re.finditer(r"(\d+)\s*[\.．]\s*([A-DＡ-Ｄ])", md):
+        mapping[m.group(1)] = OPT_MAP.get(m.group(2), m.group(2))
     return mapping
 
 
+def _is_valid_map(mapping: Dict[str, str], count: int) -> bool:
+    """Return True if mapping has answers for all questions and only A-D."""
+    if len(mapping) != count:
+        return False
+    return all(v in {'A', 'B', 'C', 'D'} for v in mapping.values())
+
+
 def combine(questions: List[Dict], ans_md: str, mod_md: str, *, subject: str, source: str) -> Dict:
-    """Combine questions with answers and modifications from markdown strings."""
-    ans_map = _parse_answer_map(ans_md)
-    mod_map = _parse_mod_map(mod_md)
-    if not ans_map and not mod_map:
+    """Combine questions with answers (and optional corrections).
+
+    The answer and modification markdown are first parsed into mappings. Each
+    mapping is validated to ensure it covers all questions and that every value
+    is a letter A-D. If the answer mapping passes validation it is used alone.
+    Otherwise the modification mapping is applied. A merge of both is attempted
+    if needed. The final questions contain only the resolved `answer` field.
+    """
+    ans_map = _parse_answer_map(ans_md) if ans_md else {}
+    mod_map = _parse_mod_map(mod_md) if mod_md else {}
+    q_count = len(questions)
+
+    ans_ok = _is_valid_map(ans_map, q_count)
+    mod_ok = _is_valid_map(mod_map, q_count)
+
+    if ans_ok:
+        mapping = ans_map
+    elif mod_ok:
+        mapping = mod_map
+    elif ans_map or mod_map:
+        mapping = ans_map.copy()
+        mapping.update(mod_map)
+        if not _is_valid_map(mapping, q_count):
+            raise ValueError('Answer and modification mapping incomplete or invalid')
+    else:
         raise ValueError('No analyzable tables in answer or modification PDFs')
+
     for q in questions:
         qid = str(q['id'])
-        if ans_map:
-            q['answer'] = ans_map.get(qid, '')
-        if mod_map and qid in mod_map:
-            q['modification'] = mod_map[qid]
+        if qid not in mapping:
+            raise ValueError(f'Missing answer for question {qid}')
+        q['answer'] = mapping[qid]
+
     out = {"subjects": {subject: {source: questions}}}
     out_path = os.path.join(OUT_DIR, f"combined_{source}.json")
     with open(out_path, 'w', encoding='utf-8') as f:
