@@ -20,6 +20,7 @@ class App(tk.Tk):
         self.label_to_key = {}
         self.stop_flag = False
         self.worker = None
+        self.silent_var = tk.BooleanVar()
 
         btn_frame = tk.Frame(self)
         btn_frame.pack(pady=10)
@@ -28,6 +29,7 @@ class App(tk.Tk):
         tk.Button(btn_frame, text='Parse Answers', command=self.do_answers).grid(row=0, column=2, padx=5)
         tk.Button(btn_frame, text='Combine', command=self.do_combine).grid(row=0, column=3, padx=5)
         tk.Button(btn_frame, text='Preview', command=self.preview_questions).grid(row=0, column=4, padx=5)
+        tk.Checkbutton(btn_frame, text='Silent', variable=self.silent_var).grid(row=0, column=5, padx=5)
 
         pipe_frame = tk.Frame(self)
         pipe_frame.pack(pady=5)
@@ -181,6 +183,8 @@ class App(tk.Tk):
         self.stop_flag = True
 
     def preview_questions(self, questions=None):
+        if self.silent_var.get():
+            return
         if questions is None:
             questions = self.questions
         if not questions:
@@ -222,6 +226,8 @@ class App(tk.Tk):
         show(0)
 
     def preview_text(self, text, title='Preview'):
+        if self.silent_var.get():
+            return
         win = tk.Toplevel(self)
         win.title(title)
         st = scrolledtext.ScrolledText(win)
