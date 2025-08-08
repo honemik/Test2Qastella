@@ -1,4 +1,5 @@
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog, scrolledtext
 
@@ -17,6 +18,8 @@ class App(tk.Tk):
         self.set_var = tk.StringVar()
         self.option_menu = None
         self.label_to_key = {}
+        self.stop_flag = False
+        self.worker = None
 
         btn_frame = tk.Frame(self)
         btn_frame.pack(pady=10)
@@ -25,6 +28,12 @@ class App(tk.Tk):
         tk.Button(btn_frame, text='Parse Answers', command=self.do_answers).grid(row=0, column=2, padx=5)
         tk.Button(btn_frame, text='Combine', command=self.do_combine).grid(row=0, column=3, padx=5)
         tk.Button(btn_frame, text='Preview', command=self.preview_questions).grid(row=0, column=4, padx=5)
+
+        pipe_frame = tk.Frame(self)
+        pipe_frame.pack(pady=5)
+        tk.Button(pipe_frame, text='Process Selected', command=self.process_selected).grid(row=0, column=0, padx=5)
+        tk.Button(pipe_frame, text='Process All', command=self.process_all).grid(row=0, column=1, padx=5)
+        tk.Button(pipe_frame, text='Stop', command=self.force_stop).grid(row=0, column=2, padx=5)
 
         self.log = scrolledtext.ScrolledText(self, state='disabled')
         self.log.pack(expand=True, fill='both')
@@ -91,8 +100,7 @@ class App(tk.Tk):
             return
         subj = self.files.get('subject', 'Unknown')
         source = self.label_to_key[self.set_var.get()]
-        combined = pdf_tool.combine(self.questions, self.ans_md, self.mod_md, subject=subj, source=source)
-        out_path = os.path.join(pdf_tool.OUT_DIR, f"combined_{source}.json")
+        combined, out_path = pdf_tool.combine(self.questions, self.ans_md, self.mod_md, subject=subj, source=source, logger=self.log_msg)
         self.log_msg(f'Saved combined JSON to {out_path}')
         qs = combined['subjects'][subj][source]
         self.preview_questions(qs)
@@ -101,6 +109,76 @@ class App(tk.Tk):
         key = self.label_to_key[value]
         self.files = self.sets[key]
         self.log_msg(f'Using set: {key}')
+
+    def process_set(self, key: str, files: dict) -> bool:
+        try:
+            self.files = files
+            self.log_msg(f'Processing set: {key}')
+            questions = pdf_tool.parse_questions(files['question'])
+            self.questions = questions
+            base = os.path.splitext(os.path.basename(files['question']))[0]
+            q_path = os.path.join(pdf_tool.OUT_DIR, f"questions_{base}.json")
+            self.log_msg(f'Parsed {len(questions)} questions -> {q_path}')
+            self.preview_questions(questions)
+            if self.stop_flag:
+                return False
+            ans_md = pdf_tool.parse_pdf_with_docling(files['answer']) if files.get('answer') else ''
+            if ans_md:
+                a_path = os.path.join(pdf_tool.OUT_DIR, f"{os.path.splitext(os.path.basename(files['answer']))[0]}.md")
+                self.log_msg(f'Parsed answer PDF -> {a_path}')
+                self.preview_text(ans_md, 'Answer Markdown')
+            mod_md = pdf_tool.parse_pdf_with_docling(files['modification']) if files.get('modification') else ''
+            if mod_md:
+                m_path = os.path.join(pdf_tool.OUT_DIR, f"{os.path.splitext(os.path.basename(files['modification']))[0]}.md")
+                self.log_msg(f'Parsed modification PDF -> {m_path}')
+                self.preview_text(mod_md, 'Modification Markdown')
+            if self.stop_flag:
+                return False
+            combined, out_path = pdf_tool.combine(questions, ans_md, mod_md, subject=files.get('subject', 'Unknown'), source=key, logger=self.log_msg)
+            self.log_msg(f'Saved combined JSON to {out_path}')
+            qs = combined['subjects'][files.get('subject', 'Unknown')][key]
+            self.questions = qs
+            self.preview_questions(qs)
+            return True
+        except Exception as e:
+            self.log_msg(f'Error processing set {key}: {e}')
+            return False
+
+    def process_selected(self):
+        if not self.sets:
+            self.log_msg('No folder selected')
+            return
+        key = self.label_to_key.get(self.set_var.get())
+        files = self.sets.get(key)
+        if not files:
+            self.log_msg('Set files missing')
+            return
+        def worker():
+            self.stop_flag = False
+            self.process_set(key, files)
+        self.worker = threading.Thread(target=worker)
+        self.worker.start()
+
+    def process_all(self):
+        if not self.sets:
+            self.log_msg('No folder selected')
+            return
+        def worker():
+            self.stop_flag = False
+            for key in sorted(self.sets.keys()):
+                if self.stop_flag:
+                    break
+                if not self.process_set(key, self.sets[key]):
+                    break
+            if self.stop_flag:
+                self.log_msg('Processing stopped')
+            else:
+                self.log_msg('Processing finished')
+        self.worker = threading.Thread(target=worker)
+        self.worker.start()
+
+    def force_stop(self):
+        self.stop_flag = True
 
     def preview_questions(self, questions=None):
         if questions is None:
