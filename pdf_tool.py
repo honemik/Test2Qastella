@@ -28,7 +28,7 @@ OUT_DIR = os.path.join(os.path.dirname(__file__), "out")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # patterns to locate questions / options in text lines
-QUESTION_START = re.compile(r"^(\d{1,3})[\.．]\s*(.*)")
+QUESTION_START = re.compile(r"^([0-9０-９]{1,3})[\.．]\s*(.*)")
 OPTION_PATTERN = re.compile(r"^[A-D][\.|\s]")
 
 
@@ -112,7 +112,7 @@ def parse_questions(pdf_path: str) -> List[Dict]:
             prev = questions[-1]
             while idx < len(lines):
                 stripped = lines[idx][2].strip()
-                if stripped.isdigit() and int(stripped) == expected:
+                if stripped.isdecimal() and int(stripped) == expected:
                     break
                 m = QUESTION_START.match(stripped)
                 if m and int(m.group(1)) == expected:
@@ -136,7 +136,7 @@ def parse_questions(pdf_path: str) -> List[Dict]:
         last_opt: Optional[str] = None
         for x0, y0, text in lines:
             stripped = text.strip()
-            if stripped.isdigit():
+            if stripped.isdecimal():
                 qid = int(stripped)
                 if qid == expected:
                     if current:
